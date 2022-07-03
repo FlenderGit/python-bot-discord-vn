@@ -1,224 +1,164 @@
-from random import choice
-import discord
-import aiohttp
-import asyncio
+from EmbedGenerator import EmbedGenerator
 
-from discord.ext import commands,tasks
-from bs4 import BeautifulSoup
+
+try:
+    from VNDB import VNDB
+    from discord.ext import commands
+    from utils import deleteMessage, getFinalFlag,inputRequest,checkIfNameRight,getMainParameter,getMainFromFilters
+    from EmbedGenerator import EmbedGenerator
+    from Error import *
+except Exception as e:
+    print(e)
+
 
 bot = commands.Bot(command_prefix='!')
 
-def createFicheFromHTML ( html:str ) -> discord.Embed:
+global vndb
 
-    """
-    Function createFicheFromHTML ( html : str ) : Embed
-    Create a embed from a html page of vndb
-    """
+try:
+    vndb = VNDB('test',1.0,'Flender',None,True)
+    embedGen = EmbedGenerator(vndb)
+except Exception as e:
+    print(e)
 
-    soup = BeautifulSoup(html,features="html.parser")
 
-    name = soup.find("div", {"id":"maincontent"}).find("div",{"class":"mainbox"}).find("h1").get_text()
-    thumbnail = soup.find("div", {"id":"maincontent"}).find("div",{"class":"mainbox"}).find("div",{"class":"vndetails"}).find("div",{"class":"vnimg"}).find("label",{"class":"imghover"}).find("div",{"class":"imghover--visible"}).find("img")['src']
-    description = soup.find("div", {"id":"maincontent"}).find("div",{"class":"mainbox"}).find("div",{"class":"vndetails"}).find("table",{"class":"stripe"}).find("tr",{"class":"nostripe"}).find("td",{"class":"vndesc"}).find("p").get_text()
+#page1 = vndb.get('vn', 'basic', '(title~"c")', '')
+#page2 = vndb.get('vn', 'basic', '(title~"c")', '(page=2)')
+#test = vndb.get('quote', 'basic', "(id>=1)",'{"results":1}')
+#test = vndb.get('vn', 'basic,stats', '(title~"c")', '{"sort":"popularity","reverse":true}')
+#test = vndb.get('vn', 'basic', '(id = [1,2,3])', '')
 
-    if len(description) > 1024:
-        description = description[:1010] + "..."
+#print(test)
 
-    embed = discord.Embed(title="Recherche de : "+ name)
-    embed.set_thumbnail(url=thumbnail)
-    embed.add_field(name="Description :", value=description, inline=False)
-    embed.add_field(name="Link :", value=soup.find('base')['href'], inline=True)
 
-    return embed
+#print(page1)
+#print(page2)
 
-def numeralToStr (i:int)->str:
+#details
 
-    """
-    Function numeralToStr ( i = int) : str
-    Transform a number intohis str 
-    Exemple : 1 -> 'one'
-    """
-
-    r = ""
-
-    if ( i == 1 ):
-        r = "one"
-    elif ( i == 2 ):
-        r = "two"
-    elif ( i == 3 ):
-        r = "three"
-    elif ( i == 4 ):
-        r = "four"
-    elif ( i == 5 ):
-        r = "five"
-    elif ( i == 6 ):
-        r = "six"
-    elif ( i == 7 ):
-        r = "seven"
-    elif ( i == 8 ):
-        r = "eight"
-    elif ( i == 9 ):
-        r = "nine"
-
-    return r
-
-# Command search
 @bot.command()
-async def search(ctx,*name):
+async def search(ctx,*parameters):
 
-    nameWithSpace = " ".join(name)
-    await ctx.channel.purge(limit=1)
+    """
+    The command for start the research.
+    Give me just your type of research and the name.
+    Exemple: !search <vn/character> CLANNAD
+    """
 
-    print(ctx.author.display_name + " use !search")
-    print( nameWithSpace + " = https://vndb.org/v?q=" + "+".join(name) + "&s=33A\n")
+    # Delete the commande message
+    await deleteMessage(ctx,1)
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get("https://vndb.org/v?q=" + "+".join(name) + "&s=33A" ) as response:
+    # Check if search global
+    if (parameters[0].lower() not in ['vn','character']):
+        await ctx.send(MSG_FONCTIONNALITY_NOT_CODE)
+    
+    # Check if search with type
+    else:
+
+        # Extract parameters from command
+        name = " ".join(parameters[1:len(parameters)])
+        type = parameters[0]
+
+        # Prepare request with type
+        if type == 'vn':
+            request = vndb.get(type,'basic','('+ getMainParameter(type) +'~"' + name +'")','{"sort":"popularity","reverse":true}')
+        else:
+            request = vndb.get(type,'basic','('+ getMainParameter(type) +'~"' + name +'")','')
+
+        # Check if request contain the exact name
+        if checkIfNameRight(request['items'],getMainParameter(type),name) != None or request['num'] == 1:
+            fullRequest = vndb.get(type,getFinalFlag(type),f"(id={request['items'][0]['id']})",'')
+            await ctx.send(embed=embedGen.createEmbed(type,fullRequest['items'][0]))
+
+        # Ckeck if there are many result of request
+        elif request['num'] > 1:
             
-            if  response.status == 200:
+            # Send a embed list to choose in list
+            await ctx.send(embed=embedGen.generateEmbedListSimple(type,name,request['items'],1))
 
-                html = await response.text()
-                soup = BeautifulSoup(html,features="html.parser")
+            # Initialise while
+            rep = 'page'
+            find = False
 
-                # AF : Test si direct page
-                if soup.find('title').get_text() == 'Browse visual novels | vndb':
+            # While object not find or changing page
+            while not find and rep.split(' ')[0].lower() == 'page':
+            
+                # Ask a new response
+                rep = await inputRequest(ctx,bot)
                 
-                    if ( soup.find("div", {"id":"maincontent"}).find("div",{"class":"mainbox browse vnbrowse"}) != None ):
+                # Create a list to choose with word
+                repLs = str(rep).lower().split(' ')
+                
+                await deleteMessage(ctx,2)
 
-                        divGames = soup.find("div", {"id":"maincontent"}).find("div",{"class":"mainbox browse vnbrowse"}).find("table").find_all("tr")[1::]
-
-                        find = False
-                        i = 0
-
-                        lenght = len(divGames)
-
-                        # Test if game is in list
-                        while i < lenght and not find :
-                        
-                            if divGames[i].a.get_text().upper() == nameWithSpace.upper():
-                                find = True
-                            else:
-                                i += 1
-
-                        # If find in list
-                        if find:
-
-                            div = divGames[i]
-
-                            async with session.get("https://vndb.org" + div.a['href'] ) as responseInfo:
-
-                                if  responseInfo.status == 200:
-
-                                    htmlGame = await responseInfo.text()
-                                    embed = createFicheFromHTML(htmlGame)
-                                    embed.set_author(name="Request by " + ctx.author.display_name, icon_url=ctx.author.avatar_url)
-                                    await ctx.send(embed=embed)
-                                    
-                                else:
-                                    print("ERROR : URL " + "https://vndb.org" + div.a['href'] + " DON'T WORK")
-
-                        # If not find in list
-                        else:
-
-                            ls = ""
-                            gameLs = []
-
-
-                            for i in range(lenght):
-                                game = divGames[i]
-                                nameGame = game.a.get_text()
-
-                                if ( len(nameGame) >= 50 ):
-                                    nameGame = nameGame[:50] + "..."
-
-                                gameLs.append(game.a['href'])
-
-                                ls += str(i+1) + ". " + nameGame + "\n\n"
-
-                            embed = discord.Embed(title= " ".join(name) + " not find... Are you looking for? ?",description=ls)
-                            embed.set_author(name="Request by " + ctx.author.display_name, icon_url=ctx.author.avatar_url)
-
-                            await ctx.send(embed=embed)
-
-                            def check(msg):
-                                return msg.author == ctx.author and msg.channel == ctx.channel
-
-                            # Interaction with list
-                            try:
-                                msg = await bot.wait_for("message", check=check, timeout=30) # 30 seconds to reply
-                                await ctx.channel.purge(limit=2)
-
-                                txt = msg.content
-
-                                if txt.isdigit():
-                                    nb = int(txt)
-                                    if ( nb > 0 and nb <= lenght ):
-
-                                        async with session.get("https://vndb.org" + gameLs[nb-1] ) as responseInfo:
-
-                                            if  responseInfo.status == 200:
-
-                                                html = await responseInfo.text()
-                                                embed = createFicheFromHTML(html)
-                                                embed.set_author(name="Request by " + ctx.author.display_name, icon_url=ctx.author.avatar_url)
-                                                await ctx.send(embed=embed)
-
-                                            else:
-                                                print("")
-
-                                    else:
-                                        await ctx.send("This number is not in the list")
-
-                                elif txt.upper() == 'CANCEL' :
-                                    await ctx.send("You have cancel the research")
-
-                                else:
-                                    await ctx.send("This is not a number")
-
-                            # Interection with list too long
-                            except asyncio.TimeoutError:
-                                await ctx.send("Sorry, you didn't reply in time!")
-
-                    # Research doesn't have result
+                # If response is a number, choose the object with the id
+                if repLs[0].isdigit():
+                    nb = int(repLs[0])
+                    if (nb >= 1 and nb <= len(request['items'])):
+                        fullRequest = vndb.get(type,getFinalFlag(type),f"(id={request['items'][nb-1]['id']})",'')
+                        await ctx.send(embed=embedGen.createEmbed(type,fullRequest['items'][0]))
+                        find = True
                     else:
-                        await ctx.send(nameWithSpace + " don't have result")
-                
-                # Research into game directly
+                        await ctx.send(MSG_NUMBER_NOT_INT_RANGE)
+            
+                # If response is cancel, cancel request
+                elif repLs[0] == 'cancel':
+                    await ctx.send(MSG_REQUESTS_CANCEL)
+                    find = True
+
+                # If response is page [x] , go to the page[x]
+                elif repLs[0] == 'page':
+                    
+                    # Prepare new request with page chagement
+                    if type == 'vn':
+                        request = vndb.get(type,'basic','('+ getMainParameter(type) +'~"' + name +'")','{"sort":"popularity","reverse":true,"page":'+str(repLs[1])+'}')
+                    else:
+                        request = vndb.get(type,'basic','('+ getMainParameter(type) +'~"' + name +'")','{"page":'+str(repLs[1])+'}')
+
+                    
+                    await ctx.send(embed=embedGen.generateEmbedListSimple(type,name,request['items'],repLs[1]))
+            
                 else:
-                    embed = createFicheFromHTML(html)
-                    embed.set_author(name="Request by " + ctx.author.display_name, icon_url=ctx.author.avatar_url)
-                    await ctx.send(embed=embed)
+                    await ctx.send(MSG_INPUT_NOT_CORRECT)
 
-            # Page search not found       
-            else:
-                print("PAGE NOT FOUND : " + response.status)
+        else:
+            await ctx.send(MSG_NOTHING_FOUND)
 
 @bot.command()
-async def vnrand(ctx):
-    print(ctx.author.display_name + " use !vrand\n")
-    await ctx.channel.purge(limit=1)
-    async with aiohttp.ClientSession() as session:
-        async with session.get("https://vndb.org/v/rand") as response:
-            if  response.status == 200:
-                embed = createFicheFromHTML(await response.text())
-                await ctx.send(embed=embed)
-            else:
-                print("PAGE NOT FOUND : " + response.status) 
+async def randomquote(ctx):
+
+    """
+    I have a quote for you
+    """
+
+    await deleteMessage(ctx,1)
+    quote = vndb.get('quote', 'basic', "(id>=1)",'{"results":1}')['items'][0]
+    await ctx.send(embed=embedGen.createEmbed('quote',quote))
+
 
 @bot.command()
-async def hello(ctx):
-    print(ctx.author.display_name + " use !hello\n")
-    await ctx.channel.purge(limit=1)
-    await ctx.send("Hello, nice to meet you. I'm Chihiro Fujisaki...\nSorry, I get kinda embarrassed whenever I introduce myself like this...\nAnyway, I hope we can get along...")
+async def randomvn(ctx):
+
+    """
+    I can choose a VN just for you !
+    """
+
+    await deleteMessage(ctx,1)
+    #vn = vndb.get('vn', 'basic,details,stats', "(id>=1)",'{"results":1}')['items'][0]
+    #await ctx.send(embed=embedGen.createEmbed('vn',vn))
+    await ctx.send('Not working for now...')
+
+@bot.command()
+async def info(ctx):
+    
+    """
+    I can present myself I you want !
+    """
+    
+    await deleteMessage(ctx,1)
+    await ctx.send("Hello, nice to meet you. I'm Chihiro Fujisaki...\nSorry, I get kinda embarrassed whenever I introduce myself like this...\nAnyway, I hope we can get along...\n" +
+        "I'm here to help you to find VN or character.\nI search on the API of VNDB, there are a lot of games here.\nI hope I can be useful for you...nIf you want to know how I work, call me with !help.")
 
 
-lsStatus = [ "Helping peoples !"]
 
-@tasks.loop(minutes = 30)
-async def statusChange():
-    await bot.change_presence(activity=discord.Game(name=choice(lsStatus)))
-
-statusChange.before_loop(bot.wait_until_ready)   
-statusChange.start()
-
-bot.run('OTkyMDMxMDI1NTIzODUxMzUz.GpL_vQ.DQZ0oUkzzdua-OpBp8KBnwauTsOXCqa-idU7nU')
+bot.run('YOUR-TOKEN')
